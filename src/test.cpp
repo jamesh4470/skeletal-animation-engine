@@ -1,3 +1,4 @@
+#include "assimp/mesh.h"
 #include "assimp/vector3.h"
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
@@ -8,6 +9,7 @@
 
 #include <iostream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <raylib.h>
@@ -18,6 +20,15 @@ namespace test {
         Eigen::Vector3f position = Eigen::Vector3f::Zero();
         Eigen::Vector3f normal = Eigen::Vector3f::Zero();
         Eigen::Vector2f texture_coordinates = Eigen::Vector2f::Zero();
+            
+        // currently at most 4 bones affect a vertex at once
+        int bone_ids[4]; // the ids of bones which will affect this vertex
+        float bone_weights[4];
+    };
+
+    struct Bone {
+        int id;
+        Eigen::Matrix4<float> offset_matrix; // transforms vertices from model space to bone space
     };
 
     // a model should have a loaded texture array for optimization
@@ -37,6 +48,8 @@ namespace test {
     class Model {
         public:
             std::vector<Mesh> meshes;
+            std::unordered_map<std::string, Bone> bone_map; // maps a bone's name to the bone object
+            int bone_id = 0; // also acts as bone count
             void processNode(aiNode* assimp_node, const aiScene *assimp_scene);
             void processMesh(aiNode* assimp_node, const aiScene *assimp_scene);
     };
@@ -49,8 +62,8 @@ void test::Model::processMesh(aiNode* assimp_node, const aiScene *assimp_scene) 
     for (unsigned int i = 0; i < assimp_node->mNumMeshes; i++) {
         // scene owns the actual mesh object, node owns the indices to the scene's mesh objects
         aiMesh* mesh = assimp_scene->mMeshes[assimp_node->mMeshes[i]];
-        test::Mesh my_mesh;
 
+        test::Mesh my_mesh;
         std::vector<test::Vertex> current_mesh_vertices;
         std::vector<unsigned int> current_mesh_indices;
         std::vector<test::Texture> current_mesh_textures; // TODO
@@ -67,13 +80,19 @@ void test::Model::processMesh(aiNode* assimp_node, const aiScene *assimp_scene) 
                 my_vertex.texture_coordinates = Eigen::Vector2f(0, 0);
             }
 
+            // set the vertex's bone data to default
+            for (int k = 0; k < 4; k++) {
+                my_vertex.bone_ids[k] = -1;
+                my_vertex.bone_weights[k] = 0.0f;
+            }
+
             current_mesh_vertices.push_back(my_vertex);
         }
 
         
         // create indices attribute from assimp types
         for (unsigned int j = 0; j < mesh->mNumFaces; j++) {
-            aiFace current_face = mesh->mFaces[j]; // a triangle
+            aiFace current_face = mesh->mFaces[j]; // a triangle with 3 indices
             for (unsigned int k = 0; k < current_face.mNumIndices; k++) {
                 current_mesh_indices.push_back(current_face.mIndices[k]);
             }
@@ -82,11 +101,50 @@ void test::Model::processMesh(aiNode* assimp_node, const aiScene *assimp_scene) 
 
         // TODO: support materials
 
+
+        // iterate through bones that will influence this mesh
+        // note this isn't the bone itself, and thus multiple meshes can be influenced by the same bone
+        for (unsigned int j = 0; j < mesh->mNumBones; j++) {
+            aiBone* bone = mesh->mBones[j];
+            std::string bone_name = bone->mName.C_Str();
+            int current_bone_id;
+
+            if (this->bone_map.find(bone_name) == bone_map.end()) { // if bone has not been created/registered yet
+                test::Bone new_bone;
+
+                new_bone.id = this->bone_id++;
+                new_bone.offset_matrix = Eigen::Map<const Eigen::Matrix<float, 4, 4, Eigen::RowMajor>>(&bone->mOffsetMatrix.a1); // black magic that turns aiMatrix4x4 to Eigen::Matrix4f
+                    
+                this->bone_map[bone_name] = new_bone;
+
+                current_bone_id = new_bone.id;
+            } else {
+                current_bone_id = this->bone_map[bone_name].id;
+            }
+
+            // iterate through each vertex that is influenced by this bone
+            for (unsigned int k = 0; k < bone->mNumWeights; k++) {
+                int vertex_id = bone->mWeights[k].mVertexId; // vertex index within the mesh scope, NOT model scope
+                float weight = bone->mWeights[k].mWeight; // the influence/weight this bone has on the vertex
+
+                assert(vertex_id < (int) current_mesh_vertices.size());
+
+                for (int l = 0; l < 4; l++) {
+                    if (current_mesh_vertices[vertex_id].bone_ids[l] == -1) { // unregistered bone position
+                        current_mesh_vertices[vertex_id].bone_ids[l] = current_bone_id;
+                        current_mesh_vertices[vertex_id].bone_weights[l] = weight;
+                        break;
+                    }
+                }
+            }
+        }
+
+
         my_mesh.vertices = current_mesh_vertices;
         my_mesh.indices = current_mesh_indices;
         my_mesh.textures = current_mesh_textures;
 
-        meshes.push_back(my_mesh);
+        this->meshes.push_back(my_mesh);
     }
 }
 
@@ -138,7 +196,7 @@ static Mesh transform_to_raylib_mesh(const test::Mesh &my_mesh) {
 int main() {
     Assimp::Importer importer;
     // ../Walking.fbx is relative to the path you launch the program from
-    const aiScene *scene = importer.ReadFile("Walking.fbx", aiProcess_Triangulate | aiProcess_FlipUVs);
+    const aiScene *scene = importer.ReadFile("Walking.fbx", aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_LimitBoneWeights);
 
     if (scene == nullptr) {
         std::cout << importer.GetErrorString() << std::endl;
