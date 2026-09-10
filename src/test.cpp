@@ -38,10 +38,14 @@ namespace test {
         public:
             std::vector<Mesh> meshes;
             void processNode(aiNode* assimp_node, const aiScene *assimp_scene);
+            void processMesh(aiNode* assimp_node, const aiScene *assimp_scene);
     };
 }
 
-void test::Model::processNode(aiNode* assimp_node, const aiScene *assimp_scene) {
+/*
+ * populates Model.meshes field
+ */
+void test::Model::processMesh(aiNode* assimp_node, const aiScene *assimp_scene) {
     for (unsigned int i = 0; i < assimp_node->mNumMeshes; i++) {
         // scene owns the actual mesh object, node owns the indices to the scene's mesh objects
         aiMesh* mesh = assimp_scene->mMeshes[assimp_node->mMeshes[i]];
@@ -84,6 +88,13 @@ void test::Model::processNode(aiNode* assimp_node, const aiScene *assimp_scene) 
 
         meshes.push_back(my_mesh);
     }
+}
+
+/*
+ * recursive function that traverses through the aiScene's nodes
+ */
+void test::Model::processNode(aiNode* assimp_node, const aiScene *assimp_scene) {
+    processMesh(assimp_node, assimp_scene);
 
     // recursively process node's children
     for (unsigned int i = 0; i < assimp_node->mNumChildren; i++) {
